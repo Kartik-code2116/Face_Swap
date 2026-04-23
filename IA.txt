@@ -1,0 +1,25 @@
+1.Explain the concept of security in Industrial Internet of Things (IIoT).
+Discuss major threats and challenges such as cyber-attacks, data breaches, and device vulnerabilities.
+
+2.Describe different types of security threats in IIoT systems.Provide examples like DDoS attacks, malware, man-in-the-middle attacks, and their impact on industrial operations.
+
+3.What are authentication mechanisms in IIoT?
+Explain methods such as password-based authentication, multi-factor authentication (MFA), and biometric authentication with examples.
+
+4.Explain basic encryption techniques used in IIoT.
+Discuss how data encryption (e.g., AES, RSA) helps protect industrial data during transmission and storage.
+
+5.Discuss the role of password protection in IIoT security.
+What are best practices for creating strong passwords and preventing unauthorized access?
+
+6.What are privacy regulations and policies in IIoT?
+Explain the importance of data protection laws such as GDPR and their impact on industrial systems.
+
+7.Explain safety mechanisms in Industry 5.0.
+Describe the role of safety sensors, emergency switches, and alarms in preventing industrial accidents.
+
+8.Analyze a real IIoT system and identify potential security and safety risks.
+Suggest improvements using modern technologies like AI, blockchain, or edge computing.
+
+9.Discuss a real-world case study of IIoT in manufacturing, healthcare, or logistics.
+Explain the system architecture, security measures, and safety features used
