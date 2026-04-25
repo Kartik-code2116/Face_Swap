@@ -15,18 +15,68 @@ import pyvirtualcam
 import argparse
 import sys
 import time
+import threading
 from pathlib import Path
+
+
+class LatestFrameCamera:
+    def __init__(self, cam_index: int, width: int, height: int, fps: int):
+        self.cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(cam_index)
+
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Cannot open webcam index {cam_index}")
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or width
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or height
+        self.lock = threading.Lock()
+        self.latest_frame = None
+        self.stopped = False
+        self.thread = threading.Thread(target=self._reader, daemon=True)
+        self.thread.start()
+
+    def _reader(self):
+        while not self.stopped:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            with self.lock:
+                self.latest_frame = frame
+
+    def read(self):
+        with self.lock:
+            if self.latest_frame is None:
+                return False, None
+            return True, self.latest_frame.copy()
+
+    def release(self):
+        self.stopped = True
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.cap.release()
 
 
 def load_models():
     print("[*] Loading InsightFace models...")
     # Auto-detect GPU
     providers = ["CPUExecutionProvider"]
+    use_cuda = False
     try:
         import onnxruntime as ort
         available_providers = ort.get_available_providers()
         if "CUDAExecutionProvider" in available_providers:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            use_cuda = True
             print("[*] Using GPU (CUDA)")
         else:
             print("[*] Using CPU")
@@ -49,7 +99,7 @@ def load_models():
         str(model_path), providers=providers
     )
     print("[*] Models loaded.\n")
-    return app, swapper
+    return app, swapper, use_cuda
 
 
 def get_target_face(app, target_path: str):
@@ -65,26 +115,37 @@ def get_target_face(app, target_path: str):
     return faces[0]
 
 
-def run(target_path: str, cam_index: int = 0, fps: int = 20, det_size: tuple = (320, 320), skip_frames: int = 1):
-    app, swapper = load_models()
-    app.prepare(ctx_id=0, det_size=det_size)
+def run(
+    target_path: str,
+    cam_index: int = 0,
+    fps: int = 20,
+    det_size: tuple = (256, 256),
+    skip_frames: int = 2,
+    width: int = 640,
+    height: int = 480,
+    process_width: int = 480,
+):
+    app, swapper, use_cuda = load_models()
+    app.prepare(ctx_id=0 if use_cuda else -1, det_size=det_size)
     target_face = get_target_face(app, target_path)
 
-    cap = cv2.VideoCapture(cam_index)
-    if not cap.isOpened():
-        print(f"[!] Cannot open webcam index {cam_index}")
+    try:
+        cap = LatestFrameCamera(cam_index, width=width, height=height, fps=fps)
+    except RuntimeError as exc:
+        print(f"[!] {exc}")
         sys.exit(1)
 
-    # Limit webcam resolution for speed
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width = cap.width
+    height = cap.height
     print(f"[*] Webcam resized to: {width}x{height} @ {fps}fps (det_size={det_size}, skip={skip_frames})")
 
     frame_count = 0
     avg_fps = 0
     perf_interval = 30  # Print perf every 30 frames
+    last_output = np.zeros((height, width, 3), dtype=np.uint8)
+    process_time = 0.0
+    det_time = 0.0
+    swap_time = 0.0
 
     print("[*] Starting virtual camera... (press Ctrl+C to stop)\n")
 
@@ -96,39 +157,48 @@ def run(target_path: str, cam_index: int = 0, fps: int = 20, det_size: tuple = (
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("[!] Failed to read webcam frame.")
-                break
+                vcam.send(last_output)
+                vcam.sleep_until_next_frame()
+                continue
 
             frame_count += 1
 
-            # Frame skipping for speed
-            if frame_count % skip_frames == 0:
+            # Frame skipping for speed. When skipping, keep sending the last processed
+            # frame so video-call apps see a stable feed instead of stale queued frames.
+            if frame_count == 1 or frame_count % max(skip_frames, 1) == 0:
                 frame_start = time.time()
+                processed_frame = frame.copy()
+
                 # Resize frame if too large
-                h, w = frame.shape[:2]
-                if max(h, w) > 640:
-                    scale = 640 / max(h, w)
+                h, w = processed_frame.shape[:2]
+                scale = 1.0
+                if process_width > 0 and max(h, w) > process_width:
+                    scale = process_width / max(h, w)
                     new_w, new_h = int(w * scale), int(h * scale)
-                    frame = cv2.resize(frame, (new_w, new_h))
+                    processed_frame = cv2.resize(processed_frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
                 # Detect faces in live frame
                 det_start = time.time()
-                faces = app.get(frame)
+                faces = app.get(processed_frame)
                 det_time = time.time() - det_start
 
                 if faces:
                     swap_start = time.time()
                     # Swap each detected face with target
                     for face in faces:
-                        frame = swapper.get(frame, face, target_face, paste_back=True)
+                        processed_frame = swapper.get(processed_frame, face, target_face, paste_back=True)
                     swap_time = time.time() - swap_start
                 else:
                     swap_time = 0
 
+                if scale != 1.0:
+                    processed_frame = cv2.resize(processed_frame, (width, height), interpolation=cv2.INTER_LINEAR)
+
+                last_output = processed_frame
                 process_time = time.time() - frame_start
 
             # Send to virtual camera
-            vcam.send(frame)
+            vcam.send(last_output)
             vcam.sleep_until_next_frame()
 
             # Performance monitoring
@@ -148,9 +218,20 @@ if __name__ == "__main__":
     parser.add_argument("--target", required=True, help="Path to target face photo (JPG/PNG)")
     parser.add_argument("--cam",    type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--fps",    type=int, default=20, help="Virtual camera FPS (default: 20)")
-    parser.add_argument("--det-size", nargs=2, type=int, default=[320, 320], help="Detection size e.g. 320 320 (lower=faster)")
-    parser.add_argument("--skip-frames", type=int, default=1, help="Process every Nth frame (higher=faster, default 1)")
+    parser.add_argument("--det-size", nargs=2, type=int, default=[256, 256], help="Detection size e.g. 256 256 (lower=faster)")
+    parser.add_argument("--skip-frames", type=int, default=2, help="Process every Nth frame (higher=faster, default 2)")
+    parser.add_argument("--width", type=int, default=640, help="Capture width (default: 640)")
+    parser.add_argument("--height", type=int, default=480, help="Capture height (default: 480)")
+    parser.add_argument("--process-width", type=int, default=480, help="Max width used for face processing (default: 480)")
     args = parser.parse_args()
 
-    run(target_path=args.target, cam_index=args.cam, fps=args.fps, det_size=tuple(args.det_size), skip_frames=args.skip_frames)
-
+    run(
+        target_path=args.target,
+        cam_index=args.cam,
+        fps=args.fps,
+        det_size=tuple(args.det_size),
+        skip_frames=args.skip_frames,
+        width=args.width,
+        height=args.height,
+        process_width=args.process_width,
+    )

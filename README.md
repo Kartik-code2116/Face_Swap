@@ -59,13 +59,15 @@ Real-time face swapping using your webcam and an AI model. Swap your face with a
 
 ## Performance Optimizations (NEW)
 - **GPU Auto-Detection**: Install `pip install onnxruntime-gpu` (NVIDIA CUDA), automatically used.
-- `--det-size 320 320`: Lower detection res for speed (default 320x320).
-- `--skip-frames 2`: Skip processing every 2nd frame for higher FPS.
+- **Low-latency capture**: webcam frames are read on a background thread and old frames are dropped instead of piling up.
+- `--det-size 256 256`: Lower detection res for speed (default 256x256).
+- `--skip-frames 2`: Process every 2nd frame for higher FPS and lower CPU load.
+- `--process-width 480`: Downscale frames for face detection/swap while keeping 640x480 virtual camera output.
 - Real-time FPS/process timings printed.
 
 **Fast example**:
 ```
-python face_swap.py --target photo.jpg --det-size 320 320 --skip-frames 2 --fps 30
+python face_swap.py --target photo.jpg --det-size 256 256 --skip-frames 2 --process-width 480 --fps 20
 ```
 
 ## Troubleshooting
@@ -93,7 +95,7 @@ error: Microsoft Visual C++ 14.0 or greater is required
 ### Other issues
 - Model not found: Ensure `inswapper_128.onnx` in folder.
 - No virtual cam: Install OBS VirtualCam.
-- Poor perf: Use new flags, GPU, or lower webcam res.
+- Poor perf/latency in Zoom or Meet: use the new defaults first, then try `--skip-frames 3` or `--process-width 360`.
 
 ## Project Structure
 ```
