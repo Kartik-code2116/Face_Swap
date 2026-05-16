@@ -1,6 +1,8 @@
 # Real-Time Face Swap
 Real-time face swapping using your webcam and an AI model. Swap your face with any photo and output to a virtual camera for Zoom/Meet/Teams.
 
+python face_swap.py --target atharv.jpg --skip-frames 2 --process-width 360
+
 ## Features
 - Live webcam input
 - Face swap with any target photo
